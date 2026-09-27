@@ -165,9 +165,7 @@ codec would be a C extension.
 
 ## Design notes
 
-Full rationale in [`docs/DESIGN.md`](docs/DESIGN.md). Interview talking points —
-including the bugs this design had and how each was found — are in
-[`docs/TALKING_POINTS.md`](docs/TALKING_POINTS.md).
+Full architectural rationale and internal invariants are documented in docs/DESIGN.md.
 
 The short version:
 
@@ -188,8 +186,7 @@ grow server memory without limit.
 **A read that mutates is a trap.** `Codec.payload()` returns a non-mutating
 snapshot. The obvious implementation — a `bytes()` that finalises the bit
 buffer as a side effect — corrupts every sample written after the first read,
-because finalising pads the partial byte. That bug shipped once, in the Go
-original, and the regression test for it is in `tests/test_codec.py`.
+because finalising pads the partial byte. That bug occurred in an earlier prototype, and the regression test for it is enforced in tests/test_codec.py.
 
 ---
 
@@ -209,7 +206,7 @@ pulse/
   static/        dashboard
   cli/           server, loadgen, tsdbbench
 tests/           163 tests
-docs/            DESIGN.md, TALKING_POINTS.md
+docs/            DESIGN.md
 ```
 
 ## API
