@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pulse — time-series store</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #21262d; --fg: #e6edf3;
+    --dim: #8b949e; --accent: #58a6ff; --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 12px; padding: 14px 20px;
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 17px; margin: 0; letter-spacing: .02em; }
+  header .tag { color: var(--dim); font-size: 12px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); display: inline-block; }
+  .dot.live { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  main { padding: 20px; display: grid; gap: 16px; max-width: 1400px; margin: 0 auto; }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .stat .k { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  .stat .v { font-size: 22px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .stat .s { color: var(--dim); font-size: 11px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .panel h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
+    margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--line); font-weight: 600;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .panel .body { padding: 14px; }
+  canvas { width: 100%; height: 220px; display: block; }
+  select, input, button {
+    background: #0d1117; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 9px; font: inherit; font-size: 13px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 14px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; }
+  tr:last-child td { border-bottom: none; }
+  .empty { color: var(--dim); padding: 20px 14px; text-align: center; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+  code { background: #0d1117; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .alert { border-left: 3px solid var(--bad); padding: 8px 14px; border-bottom: 1px solid var(--line); }
+  .alert .m { font-size: 13px; }
+  .alert .t { color: var(--dim); font-size: 11px; }
+  footer { color: var(--dim); font-size: 12px; padding: 0 20px 24px; max-width: 1400px; margin: 0 auto; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Pulse</h1>
+  <span class="tag">Gorilla-style compressed time-series store</span>
+  <span style="flex:1"></span>
+  <span class="tag"><span class="dot" id="dot"></span> <span id="conn">connecting</span></span>
+</header>
+
+<main>
+  <div class="grid" id="stats"></div>
+
+  <section class="panel">
+    <h2>
+      <span>Series</span>
+      <span class="row">
+        <select id="metric"></select>
+        <select id="window">
+          <option value="300">5m</option>
+          <option value="900">15m</option>
+          <option value="3600" selected>1h</option>
+          <option value="21600">6h</option>
+          <option value="86400">24h</option>
+        </select>
+        <select id="agg">
+          <option value="avg" selected>avg</option>
+          <option value="max">max</option>
+          <option value="min">min</option>
+          <option value="sum">sum</option>
+          <option value="last">last</option>
+          <option value="count">count</option>
+        </select>
+        <button id="refresh">Refresh</button>
+      </span>
+    </h2>
+    <div class="body"><canvas id="chart"></canvas></div>
+    <div id="legend" class="row" style="padding:0 14px 14px"></div>
+  </section>
+
+  <div style="display:grid;gap:16px;grid-template-columns:1fr 1fr">
+    <section class="panel">
+      <h2><span>Alerts</span><span class="tag" id="alertCount"></span></h2>
+      <div id="alerts"><div class="empty">No alerts yet.</div></div>
+    </section>
+
+    <section class="panel">
+      <h2><span>Rules</span><button id="addRule">+ New</button></h2>
+      <div id="rules"></div>
+    </section>
+  </div>
+
+  <section class="panel">
+    <h2><span>Compression</span><span class="tag" id="ratioTag"></span></h2>
+    <div class="body">
+      <div class="row" style="margin-bottom:10px">
+        <div class="bar" style="flex:1"><i id="ratioBar"></i></div>
+      </div>
+      <div class="grid" id="compression"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2><span>All series</span><span class="tag" id="seriesCount"></span></h2>
+    <div id="series"></div>
+  </section>
+</main>
+
+<footer>
+  Endpoints: <code>POST /api/write</code> (Prometheus exposition) ·
+  <code>GET /api/query?metric=&amp;step=&amp;agg=</code> ·
+  <code>GET /api/stats</code> ·
+  <code>GET /api/rules</code> ·
+  <code>WS /api/live</code> ·
+  <a href="/api/docs">OpenAPI</a>
+</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => {
+  if (n === null || n === undefined) return "—";
+  if (typeof n !== "number") return n;
+  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return Number.isInteger(n) ? String(n) : n.toFixed(2);
+};
+const fmtBytes = (n) => {
+  if (!n) return "0 B";
+  const u = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i ? 1 : 0) + " " + u[i];
+};
+
+// Raw 16 bytes/sample is the floor: an int64 timestamp plus a float64 value.
+const RAW_BYTES_PER_SAMPLE = 16;
+
+let latestStats = null;
+
+function renderStats(s) {
+  latestStats = s;
+  const total = s.total_samples || 0;
+  const onDisk = s.bytes_on_disk || 0;
+  const perSample = total ? onDisk / total : 0;
+  const ratio = perSample ? RAW_BYTES_PER_SAMPLE / perSample : 0;
+
+  const tiles = [
+    ["Series", fmt(s.series), s.head_blocks + " head · " + s.sealed_blocks + " sealed"],
+    ["Samples in", fmt(total), s.recovered_samples ? fmt(s.recovered_samples) + " recovered" : "this process"],
+    ["On disk", fmtBytes(onDisk), perSample ? perSample.toFixed(2) + " B/sample" : "nothing sealed yet"],
+    ["Compression", ratio ? ratio.toFixed(2) + "x" : "—", perSample ? "vs " + RAW_BYTES_PER_SAMPLE + " B/sample raw" : "seal a block to measure"],
+    ["Samples read", fmt(s.samples_read), fmt(s.queries) + " queries"],
+    ["WAL", fmtBytes(s.wal_bytes), fmt(s.wal_syncs) + " syncs"],
+    ["Live clients", fmt(s.live_clients), s.clients_dropped ? fmt(s.clients_dropped) + " dropped" : "none dropped"],
+    ["Alerts", fmt(s.rules_fired_total || 0), (s.rules_firing || 0) + " firing now"],
+  ];
+  $("stats").innerHTML = tiles.map(([k, v, sub]) =>
+    `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${sub}</div></div>`
+  ).join("");
+
+  $("ratioBar").style.width = Math.min(100, (ratio / 16) * 100) + "%";
+  $("ratioTag").textContent = ratio ? ratio.toFixed(2) + "x vs 16 B/sample raw" : "seal a block to measure";
+  $("compression").innerHTML = [
+    ["Raw", (total * RAW_BYTES_PER_SAMPLE) + " B", "int64 ts + float64 value"],
+    ["Encoded", fmtBytes(onDisk), "delta-of-delta + XOR, bit-packed"],
+    ["Sealed samples", fmt(s.sealed_samples), "in " + fmt(s.sealed_blocks) + " blocks"],
+    ["Block window", (s.block_span_secs / 3600) + " h", "Gorilla's diminishing-returns point"],
+  ].map(([k, v, sub]) =>
+    `<div class="stat"><div class="k">${k}</div><div class="v" style="font-size:17px">${v}</div><div class="s">${sub}</div></div>`
+  ).join("");
+}
+
+const PALETTE = ["#58a6ff", "#3fb950", "#d29922", "#f85149", "#bc8cff", "#39c5cf", "#ff7b72", "#7ee787"];
+
+function drawChart(results) {
+  const canvas = $("chart");
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  const pad = { l: 52, r: 12, t: 12, b: 24 };
+  const plotW = w - pad.l - pad.r, plotH = h - pad.t - pad.b;
+
+  const all = results.flatMap((r) => r.points);
+  if (!all.length) {
+    ctx.fillStyle = "#8b949e";
+    ctx.font = "13px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("No samples in this range. Start the load generator or POST to /api/write.", w / 2, h / 2);
+    $("legend").innerHTML = "";
+    return;
+  }
+
+  const tMin = Math.min(...all.map((p) => p.t));
+  const tMax = Math.max(...all.map((p) => p.t));
+  let vMin = Math.min(...all.map((p) => p.v));
+  let vMax = Math.max(...all.map((p) => p.v));
+  if (vMin === vMax) { vMin -= 1; vMax += 1; }
+  const vPad = (vMax - vMin) * 0.08;
+  vMin -= vPad; vMax += vPad;
+
+  const x = (t) => pad.l + ((t - tMin) / (tMax - tMin || 1)) * plotW;
+  const y = (v) => pad.t + plotH - ((v - vMin) / (vMax - vMin)) * plotH;
+
+  // grid + y labels
+  ctx.strokeStyle = "#21262d"; ctx.fillStyle = "#8b949e";
+  ctx.font = "11px sans-serif"; ctx.textAlign = "right"; ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const v = vMin + ((vMax - vMin) * i) / 4;
+    const yy = y(v);
+    ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(w - pad.r, yy); ctx.stroke();
+    ctx.fillText(fmt(v), pad.l - 6, yy + 4);
+  }
+  // x labels
+  ctx.textAlign = "center";
+  for (let i = 0; i <= 4; i++) {
+    const t = tMin + ((tMax - tMin) * i) / 4;
+    const d = new Date(t * 1000);
+    ctx.fillText(d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), x(t), h - 6);
+  }
+
+  results.forEach((r, i) => {
+    const color = PALETTE[i % PALETTE.length];
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
+    r.points.forEach((p, j) => {
+      const px = x(p.t), py = y(p.v);
+      j === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+  });
+
+  $("legend").innerHTML = results.map((r, i) =>
+    `<span class="row" style="gap:6px;color:var(--dim);font-size:12px">
+       <i style="width:10px;height:10px;border-radius:2px;background:${PALETTE[i % PALETTE.length]};display:inline-block"></i>
+       <span style="color:var(--fg)">${r.name}</span>
+       <span>${r.points.length} pts</span>
+     </span>`
+  ).join("");
+}
+
+async function loadChart() {
+  const metric = $("metric").value;
+  if (!metric) return;
+  const win = parseInt($("window").value, 10);
+  const now = Math.floor(Date.now() / 1000);
+  // Pick a step that keeps the chart near a few hundred points.
+  const step = Math.max(1, Math.floor(win / 300));
+  const url = `/api/query?metric=${encodeURIComponent(metric)}` +
+              `&start=${now - win}&end=${now}&step=${step}&agg=${$("agg").value}`;
+  const res = await fetch(url);
+  if (!res.ok) return;
+  drawChart((await res.json()).result);
+}
+
+async function loadSeries() {
+  const res = await fetch("/api/series");
+  if (!res.ok) return;
+  const { series } = await res.json();
+  $("seriesCount").textContent = series.length + " total";
+
+  const metrics = [...new Set(series.map((s) => s.labels.__name__ || s.name.split("{")[0]))].sort();
+  const sel = $("metric");
+  const prev = sel.value;
+  sel.innerHTML = metrics.map((m) => `<option value="${m}">${m}</option>`).join("");
+  if (metrics.includes(prev)) sel.value = prev;
+
+  $("series").innerHTML = series.length ? `<table>
+    <thead><tr><th>ID</th><th>Selector</th><th>Labels</th></tr></thead>
+    <tbody>${series.map((s) => `<tr>
+      <td class="num">${s.id}</td>
+      <td><code>${s.name}</code></td>
+      <td style="color:var(--dim);font-size:12px">${
+        Object.entries(s.labels).filter(([k]) => k !== "__name__")
+          .map(([k, v]) => `${k}="${v}"`).join(" ") || "—"
+      }</td>
+    </tr>`).join("")}</tbody></table>`
+    : `<div class="empty">No series yet. POST samples to <code>/api/write</code>.</div>`;
+}
+
+async function loadAlerts() {
+  const res = await fetch("/api/alerts");
+  if (!res.ok) return;
+  const { alerts } = await res.json();
+  $("alertCount").textContent = alerts.length + " recent";
+  $("alerts").innerHTML = alerts.length ? alerts.slice(0, 30).map((a) =>
+    `<div class="alert"><div class="m">${a.message}</div>
+     <div class="t">${new Date(a.firedAt * 1000).toLocaleTimeString()} · ${a.series}</div></div>`
+  ).join("") : `<div class="empty">No alerts yet.</div>`;
+}
+
+async function loadRules() {
+  const res = await fetch("/api/rules");
+  if (!res.ok) return;
+  const { rules } = await res.json();
+  $("rules").innerHTML = rules.length ? `<table>
+    <thead><tr><th>Name</th><th>Condition</th><th>Window</th><th></th></tr></thead>
+    <tbody>${rules.map((r) => `<tr>
+      <td>${r.name}</td>
+      <td><code>${r.agg}(${r.metric}) ${r.op} ${r.threshold}</code></td>
+      <td class="num">${r.windowSec}s</td>
+      <td style="text-align:right"><button data-del="${r.id}">Delete</button></td>
+    </tr>`).join("")}</tbody></table>`
+    : `<div class="empty">No rules. Click <b>+ New</b> to add one.</div>`;
+
+  document.querySelectorAll("[data-del]").forEach((b) => b.onclick = async () => {
+    await fetch("/api/rules/" + b.dataset.del, { method: "DELETE" });
+    loadRules();
+  });
+}
+
+$("addRule").onclick = async () => {
+  const metric = $("metric").value || prompt("Metric name?", "cpu_usage");
+  if (!metric) return;
+  const threshold = parseFloat(prompt("Fire when avg exceeds", "80"));
+  if (Number.isNaN(threshold)) return;
+  const name = prompt("Rule name", metric + " high");
+  if (!name) return;
+  const res = await fetch("/api/rules", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, metric, agg: "avg", windowSec: 60, op: ">", threshold, minCount: 3 }),
+  });
+  if (!res.ok) { alert((await res.json()).error || "failed"); return; }
+  loadRules();
+};
+
+async function refresh() {
+  const res = await fetch("/api/stats");
+  if (!res.ok) return;
+  renderStats(await res.json());
+  await Promise.all([loadSeries(), loadAlerts(), loadRules()]);
+  await loadChart();
+}
+
+// --- live feed -------------------------------------------------------------
+let ws, retry = 0;
+function connect() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${proto}//${location.host}/api/live`);
+  ws.onopen = () => { retry = 0; $("dot").classList.add("live"); $("conn").textContent = "live"; };
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "alert") loadAlerts();
+    if (msg.type === "samples") {
+      clearTimeout(window._t);
+      window._t = setTimeout(loadChart, 500);
+    }
+  };
+  ws.onclose = () => {
+    $("dot").classList.remove("live");
+    $("conn").textContent = "reconnecting";
+    setTimeout(connect, Math.min(5000, 500 * ++retry));
+  };
+  ws.onerror = () => ws.close();
+}
+
+$("refresh").onclick = refresh;
+$("metric").onchange = loadChart;
+$("window").onchange = loadChart;
+$("agg").onchange = loadChart;
+
+refresh();
+setInterval(() => fetch("/api/stats").then((r) => r.json()).then(renderStats).catch(() => {}), 3000);
+connect();
+</script>
+</body>
+</html>

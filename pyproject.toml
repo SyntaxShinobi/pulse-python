@@ -1,0 +1,38 @@
+[project]
+name = "pulse"
+version = "0.1.0"
+description = "Self-hosted time-series metrics engine: Gorilla compression, WAL-backed durability, alerting, live dashboard"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+pulse-server = "pulse.cli.server:main"
+pulse-loadgen = "pulse.cli.loadgen:main"
+pulse-tsdbbench = "pulse.cli.tsdbbench:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["pulse*"]
+
+[tool.setuptools.package-data]
+pulse = ["static/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "integration: runs a real uvicorn server on a spare port (slower)",
+]
